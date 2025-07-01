@@ -1,0 +1,17 @@
+{
+  "name": "giscus-to-artalk",
+  "version": "1.0.0",
+  "description": "Export Giscus comments (from GitHub Discussions) to Artalk-compatible JSON format.",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "node src/main.js"
+  },
+  "author": "xaoxuu",
+  "license": "MIT",
+  "dependencies": {
+    "graphql-request": "^6.1.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
