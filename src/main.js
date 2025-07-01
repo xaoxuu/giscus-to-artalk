@@ -24,33 +24,33 @@ const graphql = new GraphQLClient('https://api.github.com/graphql', {
 
 const discussionsQuery = gql`
   query GetDiscussions($owner: String!, $name: String!, $after: String) {
-  repository(owner: $owner, name: $name) {
-    discussions(first: 50, after: $after) {
-      pageInfo { hasNextPage endCursor }
-      nodes {
-        id
-        number
-        title
-        bodyText
-        createdAt
-        category { name }
-        comments(first: 100) {
-          nodes {
-            id
-            bodyText
-            createdAt
-            author {
-              login
-              url
-              avatarUrl
+    repository(owner: $owner, name: $name) {
+      discussions(first: 50, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          number
+          title
+          bodyText
+          createdAt
+          category { name }
+          comments(first: 100) {
+            nodes {
+              id
+              bodyText
+              createdAt
+              author {
+                login
+                url
+                avatarUrl
+              }
+              replyTo { id }
             }
-            replyTo { id }
           }
         }
       }
     }
   }
-}
 `;
 
 async function fetchDiscussions(after = null, collected = []) {
@@ -103,7 +103,16 @@ async function fetchDiscussions(after = null, collected = []) {
   const outputPath = path.resolve(OUTPUT_FILE);
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   fs.writeFileSync(outputPath, JSON.stringify(artalkComments, null, 2));
-  console.log(`Exported ${artalkComments.length} comments to ${OUTPUT_FILE}`);
+  console.log(`✅ Exported ${artalkComments.length} comments to ${OUTPUT_FILE}`);
+
+  // 检查文件是否真的写入成功
+  if (fs.existsSync(outputPath)) {
+    console.log('✅ File successfully written:', outputPath);
+    console.log('📦 Preview:', JSON.stringify(artalkComments[0], null, 2));
+  } else {
+    console.error('❌ Output file was not created:', outputPath);
+    process.exit(1);
+  }
 })();
 
 function extractPageKey(title) {
