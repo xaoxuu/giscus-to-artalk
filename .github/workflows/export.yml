@@ -34,6 +34,10 @@ jobs:
       - name: Run export script
         run: node src/main.js
 
+      - name: Setup Git Config
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
       - name: Commit and Push to output branch
         run: |
           git fetch origin output || true
