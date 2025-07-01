@@ -2,6 +2,7 @@
 const { GraphQLClient, gql } = require('graphql-request');
 const fs = require('fs');
 const path = require('path');
+const fetch = require('node-fetch');
 
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const REPO_OWNER = process.env.REPO_OWNER;
@@ -22,30 +23,49 @@ const graphql = new GraphQLClient('https://api.github.com/graphql', {
   },
 });
 
+const userCache = {};
+
+async function getUserEmail(login) {
+  if (userCache[login]) return userCache[login];
+  const res = await fetch(`https://api.github.com/users/${login}`, {
+    headers: { Authorization: `Bearer ${GITHUB_TOKEN}` },
+  });
+  const data = await res.json();
+  const email = data.email || `${login}@users.noreply.github.com`;
+  userCache[login] = email;
+  return email;
+}
+
 const discussionsQuery = gql`
   query GetDiscussions($owner: String!, $name: String!, $after: String) {
     repository(owner: $owner, name: $name) {
       discussions(first: 50, after: $after) {
         pageInfo { hasNextPage endCursor }
         nodes {
-          id
           number
           title
-          bodyText
-          createdAt
           category { name }
-          comments(first: 100) {
-            nodes {
-              id
-              bodyText
-              createdAt
-              author {
-                login
-                url
-                avatarUrl
-              }
-              replyTo { id }
+        }
+      }
+    }
+  }
+`;
+
+const commentsQuery = gql`
+  query GetComments($owner: String!, $name: String!, $number: Int!, $after: String) {
+    repository(owner: $owner, name: $name) {
+      discussion(number: $number) {
+        comments(first: 100, after: $after) {
+          pageInfo { hasNextPage endCursor }
+          nodes {
+            id
+            bodyText
+            createdAt
+            author {
+              login
+              url
             }
+            replyTo { id }
           }
         }
       }
@@ -54,12 +74,7 @@ const discussionsQuery = gql`
 `;
 
 async function fetchDiscussions(after = null, collected = []) {
-  const variables = {
-    owner: REPO_OWNER,
-    name: REPO_NAME,
-    category: CATEGORY_NAME,
-    after,
-  };
+  const variables = { owner: REPO_OWNER, name: REPO_NAME, after };
   const data = await graphql.request(discussionsQuery, variables);
   const discussions = data.repository.discussions.nodes;
   collected.push(...discussions);
@@ -68,6 +83,20 @@ async function fetchDiscussions(after = null, collected = []) {
     return fetchDiscussions(pageInfo.endCursor, collected);
   }
   return collected;
+}
+
+async function fetchAllComments(discussionNumber) {
+  const comments = [];
+  let after = null;
+  while (true) {
+    const variables = { owner: REPO_OWNER, name: REPO_NAME, number: discussionNumber, after };
+    const data = await graphql.request(commentsQuery, variables);
+    const page = data.repository.discussion.comments;
+    comments.push(...page.nodes);
+    if (!page.pageInfo.hasNextPage) break;
+    after = page.pageInfo.endCursor;
+  }
+  return comments;
 }
 
 (async () => {
@@ -80,7 +109,12 @@ async function fetchDiscussions(after = null, collected = []) {
 
   for (const discussion of discussions) {
     const pageKey = extractPageKey(discussion.title);
-    for (const comment of discussion.comments.nodes) {
+    const comments = await fetchAllComments(discussion.number);
+    for (const comment of comments) {
+      const email = comment.author?.login
+        ? await getUserEmail(comment.author.login)
+        : 'anonymous@unknown';
+
       const commentData = {
         id: idCounter++,
         page_key: pageKey,
@@ -89,13 +123,15 @@ async function fetchDiscussions(after = null, collected = []) {
         created_at: comment.createdAt,
         nick: comment.author?.login || 'Anonymous',
         link: comment.author?.url || '',
-        avatar: comment.author?.avatarUrl || '',
+        email,
         rid: 0,
       };
+
       commentIdMap.set(comment.id, commentData.id);
       if (comment.replyTo?.id) {
         commentData.rid = commentIdMap.get(comment.replyTo.id) || 0;
       }
+
       artalkComments.push(commentData);
     }
   }
@@ -104,15 +140,7 @@ async function fetchDiscussions(after = null, collected = []) {
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   fs.writeFileSync(outputPath, JSON.stringify(artalkComments, null, 2));
   console.log(`✅ Exported ${artalkComments.length} comments to ${OUTPUT_FILE}`);
-
-  // 检查文件是否真的写入成功
-  if (fs.existsSync(outputPath)) {
-    console.log('✅ File successfully written:', outputPath);
-    console.log('📦 Preview:', JSON.stringify(artalkComments[0], null, 2));
-  } else {
-    console.error('❌ Output file was not created:', outputPath);
-    process.exit(1);
-  }
+  
 })();
 
 function extractPageKey(title) {
