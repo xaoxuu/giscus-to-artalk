@@ -23,33 +23,34 @@ const graphql = new GraphQLClient('https://api.github.com/graphql', {
 });
 
 const discussionsQuery = gql`
-  query GetDiscussions($owner: String!, $name: String!, $category: String!, $after: String) {
-    repository(owner: $owner, name: $name) {
-      discussions(first: 50, after: $after, category: $category) {
-        pageInfo { hasNextPage endCursor }
-        nodes {
-          id
-          number
-          title
-          bodyText
-          createdAt
-          comments(first: 100) {
-            nodes {
-              id
-              bodyText
-              createdAt
-              author {
-                login
-                url
-                avatarUrl
-              }
-              replyTo { id }
+  query GetDiscussions($owner: String!, $name: String!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    discussions(first: 50, after: $after) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        id
+        number
+        title
+        bodyText
+        createdAt
+        category { name }
+        comments(first: 100) {
+          nodes {
+            id
+            bodyText
+            createdAt
+            author {
+              login
+              url
+              avatarUrl
             }
+            replyTo { id }
           }
         }
       }
     }
   }
+}
 `;
 
 async function fetchDiscussions(after = null, collected = []) {
@@ -70,7 +71,9 @@ async function fetchDiscussions(after = null, collected = []) {
 }
 
 (async () => {
-  const discussions = await fetchDiscussions();
+  const discussions = (await fetchDiscussions()).filter(
+    d => d.category?.name === CATEGORY_NAME
+  );
   let idCounter = 1;
   const artalkComments = [];
   const commentIdMap = new Map();
