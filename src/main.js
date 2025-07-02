@@ -1,19 +1,26 @@
-// scripts/export.js
 const { GraphQLClient, gql } = require('graphql-request');
+const fetch = require('node-fetch');
 const fs = require('fs');
 const path = require('path');
-const fetch = require('node-fetch');
+
+const config = require('../config.js');
 
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
-const REPO_OWNER = process.env.REPO_OWNER;
-const REPO_NAME = process.env.REPO_NAME;
-const CATEGORY_NAME = process.env.DISCUSSION_CATEGORY;
-const SITE_NAME = process.env.SITE_NAME || 'My Site';
-const MAPPING = process.env.MAPPING || 'pathname';
-const OUTPUT_FILE = process.env.OUTPUT_FILE || 'output/comments.json';
+const REPO_OWNER = config.repo_owner;
+const REPO_NAME = config.repo_name;
+const CATEGORY_NAME = config.category_name;
+const MAPPING = config.mapping || 'pathname';
+const OUTPUT_FILE = config.output_file || 'giscus.artrans';
+
+const AUTHOR_EMAIL_MAP = config.author_email_map || {};
+const AUTHOR_LINK_MAP = config.author_link_map || {};
+const AUTHOR_ALIAS_MAP = config.author_alias_map || {};
+const PATHNAME_REWRITE = config.pathname_rewrite || {};
+const PAGE_TITLE_MAP = config.page_title_map || {};
+const PAGE_FILTER = config.page_filter || null;
 
 if (!GITHUB_TOKEN || !REPO_OWNER || !REPO_NAME || !CATEGORY_NAME) {
-  console.error('Missing required environment variables.');
+  console.error('Missing required GITHUB_TOKEN or config.js fields.');
   process.exit(1);
 }
 
@@ -26,6 +33,7 @@ const graphql = new GraphQLClient('https://api.github.com/graphql', {
 const userCache = {};
 
 async function getUserEmail(login) {
+  if (AUTHOR_EMAIL_MAP[login]) return AUTHOR_EMAIL_MAP[login];
   if (userCache[login]) return userCache[login];
   const res = await fetch(`https://api.github.com/users/${login}`, {
     headers: { Authorization: `Bearer ${GITHUB_TOKEN}` },
@@ -51,28 +59,6 @@ const discussionsQuery = gql`
   }
 `;
 
-const commentsQuery = gql`
-  query GetComments($owner: String!, $name: String!, $number: Int!, $after: String) {
-    repository(owner: $owner, name: $name) {
-      discussion(number: $number) {
-        comments(first: 100, after: $after) {
-          pageInfo { hasNextPage endCursor }
-          nodes {
-            id
-            bodyText
-            createdAt
-            author {
-              login
-              url
-            }
-            replyTo { id }
-          }
-        }
-      }
-    }
-  }
-`;
-
 async function fetchDiscussions(after = null, collected = []) {
   const variables = { owner: REPO_OWNER, name: REPO_NAME, after };
   const data = await graphql.request(discussionsQuery, variables);
@@ -85,16 +71,17 @@ async function fetchDiscussions(after = null, collected = []) {
   return collected;
 }
 
-async function fetchAllComments(discussionNumber) {
+async function fetchCommentsByRest(discussionNumber) {
   const comments = [];
-  let after = null;
+  let page = 1;
   while (true) {
-    const variables = { owner: REPO_OWNER, name: REPO_NAME, number: discussionNumber, after };
-    const data = await graphql.request(commentsQuery, variables);
-    const page = data.repository.discussion.comments;
-    comments.push(...page.nodes);
-    if (!page.pageInfo.hasNextPage) break;
-    after = page.pageInfo.endCursor;
+    const res = await fetch(`https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/discussions/${discussionNumber}/comments?per_page=100&page=${page}`, {
+      headers: { Authorization: `Bearer ${GITHUB_TOKEN}` },
+    });
+    const batch = await res.json();
+    if (batch.length === 0) break;
+    comments.push(...batch);
+    page++;
   }
   return comments;
 }
@@ -103,50 +90,80 @@ async function fetchAllComments(discussionNumber) {
   const discussions = (await fetchDiscussions()).filter(
     d => d.category?.name === CATEGORY_NAME
   );
-  let idCounter = 1;
-  const artalkComments = [];
-  const commentIdMap = new Map();
+
+  const rawComments = [];
 
   for (const discussion of discussions) {
-    const pageKey = extractPageKey(discussion.title);
-    const comments = await fetchAllComments(discussion.number);
+    const pageKeyRaw = extractPageKey(discussion.title);
+    if (PAGE_FILTER && !PAGE_FILTER.includes(pageKeyRaw)) continue;
+
+    const pageKey = PATHNAME_REWRITE[pageKeyRaw] || pageKeyRaw;
+    const pageTitle = PAGE_TITLE_MAP[pageKeyRaw] || "";
+
+    const comments = await fetchCommentsByRest(discussion.number);
     for (const comment of comments) {
-      const email = comment.author?.login
-        ? await getUserEmail(comment.author.login)
-        : 'anonymous@unknown';
+      const login = comment.user?.login || 'Anonymous';
+      const nick = AUTHOR_ALIAS_MAP[login] || login;
+      const email = await getUserEmail(login);
+      const link = AUTHOR_LINK_MAP[login] || comment.user?.html_url || '';
 
-      const commentData = {
-        id: idCounter++,
+      rawComments.push({
+        id: Number(comment.id),
+        _replyId: comment.parent_id ? String(comment.parent_id) : null,
+        created_at: comment.created_at,
+        content: comment.body || '',
         page_key: pageKey,
-        site_name: SITE_NAME,
-        content: comment.bodyText,
-        created_at: comment.createdAt,
-        nick: comment.author?.login || 'Anonymous',
-        link: comment.author?.url || '',
+        page_title: pageTitle,
+        nick,
+        link,
         email,
-        rid: 0,
-      };
-
-      commentIdMap.set(comment.id, commentData.id);
-      if (comment.replyTo?.id) {
-        commentData.rid = commentIdMap.get(comment.replyTo.id) || 0;
-      }
-
-      artalkComments.push(commentData);
+      });
     }
   }
+
+  const commentIdMap = new Map();
+  rawComments.forEach(c => {
+    commentIdMap.set(String(c.id), c.id);
+  });
+
+  const artalkComments = rawComments.map(c => {
+    let resolvedRid = 0;
+    if (c._replyId && commentIdMap.has(c._replyId)) {
+      resolvedRid = commentIdMap.get(c._replyId);
+    }
+    return {
+      id: c.id,
+      page_key: c.page_key,
+      page_title: c.page_title,
+      content: c.content,
+      created_at: c.created_at,
+      nick: c.nick,
+      link: c.link,
+      email: c.email,
+      rid: resolvedRid,
+    };
+  });
 
   const outputPath = path.resolve(OUTPUT_FILE);
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   fs.writeFileSync(outputPath, JSON.stringify(artalkComments, null, 2));
   console.log(`✅ Exported ${artalkComments.length} comments to ${OUTPUT_FILE}`);
-  
+
+  if (fs.existsSync(outputPath)) {
+    console.log('✅ File successfully written:', outputPath);
+    console.log('📦 Preview:', JSON.stringify(artalkComments[0], null, 2));
+  } else {
+    console.error('❌ Output file was not created:', outputPath);
+    process.exit(1);
+  }
 })();
 
 function extractPageKey(title) {
   if (MAPPING === 'pathname') {
-    const match = title.match(/\/([^\s]+)$/);
-    return match ? '/' + match[1] : '/';
+    // 标准化路径：确保以 / 开头和结尾
+    const trimmed = title.trim().replace(/^\/+|\/+$/g, '');
+    return '/' + trimmed + '/';
   }
-  return '/' + title.toLowerCase().replace(/\s+/g, '-');
+  // fallback: 使用 kebab-case 生成路径，确保以 / 开头和结尾
+  return '/' + title.trim().toLowerCase().replace(/\s+/g, '-') + '/';
 }

@@ -9,16 +9,8 @@ on:
 jobs:
   export:
     runs-on: ubuntu-latest
-
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      REPO_OWNER: xaoxuu
-      REPO_NAME: blog-comments
-      DISCUSSION_CATEGORY: Announcements
-      SITE_NAME: xaoxuu.com
-      MAPPING: pathname
-      OUTPUT_FILE: output/comments.json
-
     steps:
       - name: Checkout main branch
         uses: actions/checkout@v4
